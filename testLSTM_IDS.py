@@ -12,7 +12,7 @@ import tensorflow as tf
 from sklearn.model_selection import train_test_split
 
 TRAIN_SPLIT = 30000
-CSV_FILE_PATH = 'E:\\workplace\\Code\\VSCodeProject\\Taffic_Anomaly_Detection_based_on_Neural_Network-master\\binary_classification.csv'
+CSV_FILE_PATH = 'E:\\workplace\\Code\\VSCodeProject\\Traffic_Anomaly_Detection_based_on_Neural_Network\\binary_classification.csv'
 df = pd.read_csv(CSV_FILE_PATH)
 
 # 数据预处理
