@@ -15,7 +15,7 @@ import datetime
 
 start_time = datetime.datetime.now()
 
-# 修复路径并加载数据
+# 修复路径并加载数据，DNN模型通常用于非时间序列数据
 CSV_FILE_PATH = 'E:\\workplace\\Code\\VSCodeProject\\Traffic_Anomaly_Detection_based_on_Neural_Network\\binary_classification.csv'
 df = pd.read_csv(CSV_FILE_PATH)
 

@@ -12,6 +12,7 @@ import tensorflow as tf
 from sklearn.model_selection import train_test_split
 
 TRAIN_SPLIT = 30000
+# 数据集要求时间序列
 CSV_FILE_PATH = 'E:\\workplace\\Code\\VSCodeProject\\Traffic_Anomaly_Detection_based_on_Neural_Network\\binary_classification.csv'
 df = pd.read_csv(CSV_FILE_PATH)
 
@@ -39,19 +40,52 @@ features = df[features_considered]
 data_result = df['Target']
 
 # 标准化
+"""
+# A，原，错
+
+在时间序列问题中，通常应该仅在训练数据上计算均值和标准差，然后用这些统计量来标准化验证和测试数据。否则，如果使用整个数据集的统计量，验证集和测试集的信息会“泄露”到训练过程中，导致评估结果过于乐观，模型在真实场景中可能表现不佳。
+标准化步骤是在整个数据集上计算均值和标准差，之后再进行数据划分。这会导致验证集的数据被用于计算标准化参数，从而泄露信息。正确的做法是先划分训练集和验证集，然后在训练集上计算均值和标准差，再应用到验证集。
+
 dataset = features.values
 feature_mean = dataset.mean(axis=0)
 feature_std = dataset.std(axis=0)
 dataset = (dataset - feature_mean) / feature_std
+
+这里的dataset是全部数据。之后，数据集被划分为训练和验证。这样，当模型在训练时，已经用到了验证集的统计信息，导致数据泄露。正确的做法应该是先划分数据集，然后在训练集上计算均值和标准差，再应用到验证集和测试集。
+
 dataset = pd.DataFrame(dataset, columns=features_considered)
 dataset.insert(0, 'Target', data_result)
 dataset = dataset.values
 
+"""
+# 按时间顺序划分数据后再标准化
+# 划分训练和验证数据（假设数据已按时间排序）
+train_features = features.iloc[:TRAIN_SPLIT]
+val_features = features.iloc[TRAIN_SPLIT:]
+# 计算训练集的统计量
+train_mean = train_features.mean(axis=0)
+train_std = train_features.std(axis=0)
+# 应用训练集的统计量标准化
+train_data = (train_features - train_mean) / train_std
+val_data = (val_features - train_mean) / train_std
+
+# ​合并标签并生成时间序列数据
+# 合并标准化后的特征与标签
+train_dataset = pd.DataFrame(train_data, columns=features_considered)
+train_dataset.insert(0, 'Target', data_result.iloc[:TRAIN_SPLIT])
+val_dataset = pd.DataFrame(val_data, columns=features_considered)
+val_dataset.insert(0, 'Target', data_result.iloc[TRAIN_SPLIT:])
+# 转换为数组供后续处理
+train_dataset = train_dataset.values
+val_dataset = val_dataset.values
+
+
 # 时间序列数据生成函数
-"""
-将时间序列数据转换为监督学习（Supervised Learning）格式，生成适合时间序列预测模型。从原始时间序列中滑动一个固定长度的窗口，将窗口内的历史数据作为输入特征（data），窗口后的未来数据作为标签（labels），从而生成多个样本。
-"""
 def multivariate_data(dataset, target, start_index, end_index, history_size, target_size, step, single_step=False):
+    """
+    将时间序列数据转换为监督学习（Supervised Learning）格式，生成适合时间序列预测模型。
+    从原始时间序列中滑动一个固定长度的窗口，将窗口内的历史数据作为输入特征（data），窗口后的未来数据作为标签（labels），从而生成多个样本。
+    """
     data = []
     labels = []
     start_index = start_index + history_size                                    # 跳过前 history_size 个时间步
@@ -65,13 +99,21 @@ def multivariate_data(dataset, target, start_index, end_index, history_size, tar
             labels.append(target[i:i + target_size])
     return np.array(data), np.array(labels)
 
+
 # 用过去10000条的数据预测第10001~10100
 past_history = 10000
 future_target = 100
 STEP = 6
 
+
+# 分别生成训练和验证序列数据
+"""
+# A，原，错
 x_train_single, y_train_single = multivariate_data(dataset, dataset[:, 0], 0, TRAIN_SPLIT, past_history, future_target, STEP, single_step=True)
 x_val_single, y_val_single = multivariate_data(dataset, dataset[:, 0], TRAIN_SPLIT, None, past_history, future_target, STEP, single_step=True)
+"""
+x_train_single, y_train_single = multivariate_data(train_dataset, train_dataset[:, 0], 0, TRAIN_SPLIT, past_history, future_target, STEP, single_step=True)
+x_val_single, y_val_single = multivariate_data(val_dataset, val_dataset[:, 0], TRAIN_SPLIT, None, past_history, future_target, STEP, single_step=True)
 
 # 数据管道
 BATCH_SIZE = 256
