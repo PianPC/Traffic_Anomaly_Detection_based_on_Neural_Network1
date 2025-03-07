@@ -1,140 +1,155 @@
 #!/usr/bin/env python
-# coding=UTF-8  
-from __future__ import absolute_import, division, print_function, unicode_literals
+# coding=UTF-8
+"""
+基于LSTM的流量异常检测系统（时序数据版本）
+数据集：binary_classification.csv（需放在同一目录）
+"""
+
+# %% [1] 环境配置
 import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-import matplotlib
-matplotlib.use('TkAgg')
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import tensorflow as tf
 from sklearn.model_selection import train_test_split
 
-TRAIN_SPLIT = 30000
-# 数据集要求时间序列
-CSV_FILE_PATH = 'E:\\workplace\\Code\\VSCodeProject\\Traffic_Anomaly_Detection_based_on_Neural_Network\\binary_classification.csv'
-df = pd.read_csv(CSV_FILE_PATH)
+# 配置TensorFlow日志级别
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # 禁用oneDNN优化信息
 
-# 数据预处理
-df['Label'] = pd.Categorical(df['Label'])
-df['Label'] = df['Label'].cat.codes
-for col in df.columns:
-    if df[col].dtype != 'float64':
-        df[col] = df[col].astype(float)
+# 全局配置
+CSV_RELATIVE_PATH = './binary_classification.csv'  # 相对路径
+TRAIN_SPLIT = 30000          # 训练集分割点
+PAST_HISTORY = 1000          # 历史窗口（调整为1000以测试）
+FUTURE_TARGET = 10           # 预测窗口
+STEP = 6                     # 采样间隔
+BATCH_SIZE = 256             
 
-# 特征选择
-features_considered = ['Bwd_Packet_Length_Min',         # ​反向数据包长度最小值；DDoS控制命令、心跳包会频繁发送小包，若反向流量中出现大量极小包，可能是隐蔽信道通信或心跳信号的标志。【检测隐蔽信道】
-                       'Subflow_Fwd_Bytes',             # ​子流前向字节数；分析一个TCP流中某个时间窗口（子流）内客户端到服务器的数据传输量。端口扫描可能在短时间内产生大量小流量子流
-                       'Total_Length_of_Fwd_Packets',   # 前向数据包总长度；统计客户端到服务器的总数据量，异常高值可能指向大文件传输或数据渗透攻击。【流量规模】
-                        'Fwd_Packet_Length_Mean',        # ​前向数据包长度均值；DNS请求包通常较小（~100字节），而恶意负载（如SQL注入）可能嵌入在异常大包中，加密流量（如TLS）的数据包长度分布更均匀，而明文协议（如HTTP）可能波动更大
-                      'Bwd_Packet_Length_Std',          # 反向数据包长度标准差；量化服务器到客户端数据包长度的波动性，异常响应检测：正常Web响应长度相对稳定，而C&C服务器的响应可能随机化长度以规避检测。加密流量分析：加密流量（如VPN）的反向包长度标准差通常较低（因填充机制）。
-                      'Flow_Duration',                  # 流持续时间
-                      'Flow_IAT_Std',                   # 流到达时间间隔标准差；数据包到达时间的波动性，僵尸网络（Botnet）的C&C通信通常具有规律性时序（低标准差），而人类交互（如网页浏览）时序更随机（高标准差），隐蔽信道可能通过固定时间间隔传输数据（低标准差）【时序】
-                      'Init_Win_bytes_forward',         # 前向初始窗口字节数；记录TCP三次握手阶段客户端声明的初始窗口大小，攻击者可能操纵初始窗口大小（如设为0或极大值）以绕过防火墙规则或发起资源耗尽攻击。
-                      'Bwd_Packets/s',                  # 反向数据包速率（数据包/秒）【检测洪泛】
-                      'PSH_Flag_Count',                 # ​PSH标志计数；PSH标志强制接收端立即处理数据，高频使用可能关联攻击（如HTTP Flood）或实时应用（如VoIP）【协议细节】
-                      'Average_Packet_Size']            # 平均数据包大小；流量类型识别：小包（~64字节）：心跳包、控制命令（如ICMP Flood）。大包（~1500字节）：文件传输、视频流。加密流量检测：加密流量（如TLS）的平均包大小通常接近MTU（最大传输单元），而明文协议更分散
+# %% [2] 数据加载管道
+def load_data(file_path):
+    """加载并预处理数据"""
+    df = pd.read_csv(file_path)
+    
+    # 标签编码（修复版）
+    df['Label'] = df['Label'].astype('category').cat.codes
+    
+    # 类型统一转换
+    float_cols = df.select_dtypes(exclude=['float']).columns
+    df[float_cols] = df[float_cols].astype('float32')
+    
+    return df
 
-features = df[features_considered]
-data_result = df['Target']
+# %% [3] 特征工程
+def select_features(df):
+    """特征选择与数据准备"""
+    features = [
+        'Bwd_Packet_Length_Min', 'Subflow_Fwd_Bytes',
+        'Total_Length_of_Fwd_Packets', 'Fwd_Packet_Length_Mean',
+        'Bwd_Packet_Length_Std', 'Flow_Duration', 'Flow_IAT_Std',
+        'Init_Win_bytes_forward', 'Bwd_Packets/s', 'PSH_Flag_Count',
+        'Average_Packet_Size', 'Target'  # 包含目标列
+    ]
+    return df[features]
 
-# 标准化
-"""
-# A，原，错
+# %% [4] 数据标准化
+def normalize_data(train_df, val_df):
+    """基于训练集的标准化"""
+    train_mean = train_df.mean(axis=0)
+    train_std = train_df.std(axis=0)
+    
+    norm_train = (train_df - train_mean) / train_std
+    norm_val = (val_df - train_mean) / train_std
+    
+    return norm_train, norm_val
 
-在时间序列问题中，通常应该仅在训练数据上计算均值和标准差，然后用这些统计量来标准化验证和测试数据。否则，如果使用整个数据集的统计量，验证集和测试集的信息会“泄露”到训练过程中，导致评估结果过于乐观，模型在真实场景中可能表现不佳。
-标准化步骤是在整个数据集上计算均值和标准差，之后再进行数据划分。这会导致验证集的数据被用于计算标准化参数，从而泄露信息。正确的做法是先划分训练集和验证集，然后在训练集上计算均值和标准差，再应用到验证集。
-
-dataset = features.values
-feature_mean = dataset.mean(axis=0)
-feature_std = dataset.std(axis=0)
-dataset = (dataset - feature_mean) / feature_std
-
-这里的dataset是全部数据。之后，数据集被划分为训练和验证。这样，当模型在训练时，已经用到了验证集的统计信息，导致数据泄露。正确的做法应该是先划分数据集，然后在训练集上计算均值和标准差，再应用到验证集和测试集。
-
-dataset = pd.DataFrame(dataset, columns=features_considered)
-dataset.insert(0, 'Target', data_result)
-dataset = dataset.values
-
-"""
-# 按时间顺序划分数据后再标准化
-# 划分训练和验证数据（假设数据已按时间排序）
-train_features = features.iloc[:TRAIN_SPLIT]
-val_features = features.iloc[TRAIN_SPLIT:]
-# 计算训练集的统计量
-train_mean = train_features.mean(axis=0)
-train_std = train_features.std(axis=0)
-# 应用训练集的统计量标准化
-train_data = (train_features - train_mean) / train_std
-val_data = (val_features - train_mean) / train_std
-
-# ​合并标签并生成时间序列数据
-# 合并标准化后的特征与标签
-train_dataset = pd.DataFrame(train_data, columns=features_considered)
-train_dataset.insert(0, 'Target', data_result.iloc[:TRAIN_SPLIT])
-val_dataset = pd.DataFrame(val_data, columns=features_considered)
-val_dataset.insert(0, 'Target', data_result.iloc[TRAIN_SPLIT:])
-# 转换为数组供后续处理
-train_dataset = train_dataset.values
-val_dataset = val_dataset.values
-
-
-# 时间序列数据生成函数
-def multivariate_data(dataset, target, start_index, end_index, history_size, target_size, step, single_step=False):
+# %% [5] 时序数据生成器
+def create_time_series(dataset, target, start_idx, end_idx, hist_size, pred_size, step):
     """
-    将时间序列数据转换为监督学习（Supervised Learning）格式，生成适合时间序列预测模型。
-    从原始时间序列中滑动一个固定长度的窗口，将窗口内的历史数据作为输入特征（data），窗口后的未来数据作为标签（labels），从而生成多个样本。
+    生成时序数据样本
+    参数：
+    hist_size : 历史时间步长
+    pred_size : 预测步长
+    step      : 滑动窗口步长
     """
     data = []
     labels = []
-    start_index = start_index + history_size                                    # 跳过前 history_size 个时间步
-    end_index = end_index if end_index else len(dataset) - target_size          # 默认设为 len(dataset) - target_size：防止生成标签时越界
-    for i in range(start_index, end_index):                                     
-        indices = range(i - history_size, i, step)                              # 取 [i-history_size, i) 区间内每隔 step 步的数据（indices）
+    
+    # 自动计算结束索引
+    end_idx = end_idx or (len(dataset) - pred_size)
+    start_idx += hist_size  # 跳过初始无历史数据段
+    
+    for i in range(start_idx, end_idx):
+        indices = range(i-hist_size, i, step)
         data.append(dataset[indices])
-        if single_step:                                                         # 用过去7天的数据预测第8天，history_size=7, target_size=1
-            labels.append(target[i + target_size])
-        else:
-            labels.append(target[i:i + target_size])
+        labels.append(target[i+pred_size])  # 单步预测
+        
     return np.array(data), np.array(labels)
 
-
-# 用过去10000条的数据预测第10001~10100
-past_history = 10000
-future_target = 100
-STEP = 6
-
-
-# 分别生成训练和验证序列数据
-"""
-# A，原，错
-x_train_single, y_train_single = multivariate_data(dataset, dataset[:, 0], 0, TRAIN_SPLIT, past_history, future_target, STEP, single_step=True)
-x_val_single, y_val_single = multivariate_data(dataset, dataset[:, 0], TRAIN_SPLIT, None, past_history, future_target, STEP, single_step=True)
-"""
-x_train_single, y_train_single = multivariate_data(train_dataset, train_dataset[:, 0], 0, TRAIN_SPLIT, past_history, future_target, STEP, single_step=True)
-x_val_single, y_val_single = multivariate_data(val_dataset, val_dataset[:, 0], TRAIN_SPLIT, None, past_history, future_target, STEP, single_step=True)
-
-# 数据管道
-BATCH_SIZE = 256
-BUFFER_SIZE = 10000
-train_data_single = tf.data.Dataset.from_tensor_slices((x_train_single, y_train_single))
-train_data_single = train_data_single.cache().shuffle(BUFFER_SIZE).batch(BATCH_SIZE).repeat()       # 小批量梯度下降解决了内存限制、计算效率和训练稳定性的问题
-val_data_single = tf.data.Dataset.from_tensor_slices((x_val_single, y_val_single))
-val_data_single = val_data_single.batch(BATCH_SIZE).repeat()
-
-# 模型定义（关键修正在于使用完整的tf.keras.layers路径，不用以前from tensorflow.keras import layers导入模块）
-model = tf.keras.Sequential([
-    tf.keras.layers.LSTM(32, input_shape=x_train_single.shape[-2:]),  # 使用 tf.keras.layers
-    tf.keras.layers.Dense(32),
-    tf.keras.layers.Dense(1, activation='sigmoid')
-])
-
-# 编译与训练
-model.compile(optimizer='adam', # 优化算法，用于调整模型参数以最小化损失函数。'adam' 是通用选择，适合大多数任务，自适应学习率，收敛快且无需手动调整学习率
-              loss='binary_crossentropy', # 损失函数，衡量模型预测值与真实标签的差异。二分类任务使用 binary_crossentropy。
-              metrics=['accuracy']) # 评估指标，用于监控训练和验证过程中的模型表现（不参与参数更新）。'accuracy' 直接反映分类正确率。
-
-log_dir = "graph/log_fit/7" # 日志保存路径
-tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1)    # 记录训练过程中的损失、指标、权重分布等数据，供TensorBoard可视化分析。
-model.fit(train_data_single, epochs=5, steps_per_epoch=100, validation_data=val_data_single, validation_steps=50, callbacks=[tensorboard_callback])
+# %% [6] 主流程
+if __name__ == "__main__":
+    # 数据加载
+    raw_df = load_data(CSV_RELATIVE_PATH)
+    feature_df = select_features(raw_df)
+    
+    # 时序数据划分（保留时间顺序）
+    train_df = feature_df.iloc[:TRAIN_SPLIT]
+    val_df = feature_df.iloc[TRAIN_SPLIT:]
+    
+    # 标准化处理
+    norm_train, norm_val = normalize_data(
+        train_df.drop('Target', axis=1), 
+        val_df.drop('Target', axis=1)
+    )
+    
+    # 合并标签
+    train_data = np.hstack([train_df[['Target']].values, norm_train.values])
+    val_data = np.hstack([val_df[['Target']].values, norm_val.values])
+    
+    # 生成时序数据集（修复索引越界）
+    x_train, y_train = create_time_series(
+        train_data, train_data[:, 0], 
+        start_idx=0, end_idx=None,
+        hist_size=PAST_HISTORY, 
+        pred_size=FUTURE_TARGET,
+        step=STEP
+    )
+    
+    x_val, y_val = create_time_series(
+        val_data, val_data[:, 0],
+        start_idx=PAST_HISTORY,  # 确保足够历史数据
+        end_idx=None,
+        hist_size=PAST_HISTORY,
+        pred_size=FUTURE_TARGET,
+        step=STEP
+    )
+    
+    # 数据管道
+    train_loader = tf.data.Dataset.from_tensor_slices((x_train, y_train))
+    train_loader = train_loader.shuffle(10000).batch(BATCH_SIZE).prefetch(1)
+    
+    val_loader = tf.data.Dataset.from_tensor_slices((x_val, y_val))
+    val_loader = val_loader.batch(BATCH_SIZE)
+    
+    # LSTM模型
+    model = tf.keras.Sequential([
+        tf.keras.layers.LSTM(64, input_shape=x_train.shape[-2:]),
+        tf.keras.layers.Dense(32, activation='relu'),
+        tf.keras.layers.Dense(1, activation='sigmoid')
+    ])
+    
+    model.compile(
+        optimizer='adam',
+        loss='binary_crossentropy',
+        metrics=['accuracy', tf.keras.metrics.AUC()]
+    )
+    
+    # 训练
+    history = model.fit(
+        train_loader,
+        epochs=10,
+        validation_data=val_loader,
+        verbose=1
+    )
+    
+    # 保存模型
+    model.save('./lstm_traffic_model.keras')
+    print("模型训练完成并已保存")

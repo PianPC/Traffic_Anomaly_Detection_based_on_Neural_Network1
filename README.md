@@ -4,6 +4,9 @@
   * LSTM：网络流量中的时序性攻击检测​（如DDoS攻击的流量在时间上会突然暴增、端口扫描会在一段时间内高频出现）。需要将数据组织成时间窗口。
   * DNN：处理独立样本的分类或回归任务，每个样本的特征是独立的，不依赖前后顺序。基于单条流量特征的分类（如根据单个数据包的特征判断是否为SQL注入）。每个样本是一个独立的特征向量。
   2. ~~originDNN_IDS.py中54行理解代码过程中注释中提到的LSTM的处理顺序有泄露数据的风险~~testLSTM已处理泄露数据风险
-  3. ~~构建新的适合LSTM与DNN适用的数据集？~~原项目文件binary_classification.csv比原项目文件夹category里的csv最后多一个target标签，其余无异
+  3. ~~构建新的适合LSTM与DNN适用的数据集？~~ 原项目文件binary_classification.csv比原项目文件夹category里的csv最后多一个target标签，其余无异
   4. CICIDS2017 http://cicresearch.ca/CICDataset/CIC-IDS-2017/Dataset/CIC-IDS-2017/ 下载的两个数据集TrafficLabelling、MachineLearningCVE仅有几个标签不一样，拥有更多标签的是TrafficLabelling文件夹中的，后续准备可供LSTM与DNN共同使用的、后续需要能够二分类的数据集时加上target。（应该这样就够了？？）
  ![alt text](image.png)
+  5. 完善优化了一下DNN与LSTM文件的代码结构以及一些细节问题。
+  6. 突然发现原项目作用没完全符合开题报告里的要求，还有一些未满足的部分，比如图神经网络应用、多模型融合、系统集成等。
+  7. 仍未构建新数据集。
