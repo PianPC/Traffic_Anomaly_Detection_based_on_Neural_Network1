@@ -6,4 +6,4 @@
   2. ~~originDNN_IDS.py中54行理解代码过程中注释中提到的LSTM的处理顺序有泄露数据的风险~~testLSTM已处理泄露数据风险
   3. ~~构建新的适合LSTM与DNN适用的数据集？~~原项目文件binary_classification.csv比原项目文件夹category里的csv最后多一个target标签，其余无异
   4. CICIDS2017 http://cicresearch.ca/CICDataset/CIC-IDS-2017/Dataset/CIC-IDS-2017/ 下载的两个数据集TrafficLabelling、MachineLearningCVE仅有几个标签不一样，拥有更多标签的是TrafficLabelling文件夹中的，后续准备可供LSTM与DNN共同使用的、后续需要能够二分类的数据集时加上target。（应该这样就够了？？）
-  ![alt text](image.png)
+ ![alt text](image.png)
