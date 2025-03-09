@@ -2,7 +2,6 @@
 # coding=UTF-8
 """
 基于LSTM的流量异常检测系统（时序数据版本）
-数据集：binary_classification.csv（需放在同一目录）
 """
 
 # %% [1] 环境配置
@@ -17,7 +16,8 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # 禁用oneDNN优化信息
 
 # 全局配置
-CSV_RELATIVE_PATH = './binary_classification.csv'  # 相对路径
+recent_PATH = os.path.dirname(__file__)
+CSV_RELATIVE_PATH = os.path.join(recent_PATH,  '..', 'category', 'binary_classification.csv')
 TRAIN_SPLIT = 30000          # 训练集分割点
 PAST_HISTORY = 1000          # 历史窗口（调整为1000以测试）
 FUTURE_TARGET = 10           # 预测窗口
@@ -151,5 +151,5 @@ if __name__ == "__main__":
     )
     
     # 保存模型
-    model.save('./lstm_traffic_model.keras')
+    model.save(os.path.join(recent_PATH,  '..', 'models', 'lstm_traffic_model.keras'))
     print("模型训练完成并已保存")

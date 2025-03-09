@@ -22,7 +22,8 @@ matplotlib.use('TkAgg')
 
 # %% [2] 数据准备
 # 数据集路径配置
-CSV_FILE_PATH = 'E:\\workplace\\Code\\VSCodeProject\\Traffic_Anomaly_Detection_based_on_Neural_Network\\binary_classification.csv'
+recent_PATH = os.path.dirname(__file__)
+CSV_RELATIVE_PATH = os.path.join(recent_PATH,  '..', 'category', 'binary_classification.csv')
 
 def load_and_preprocess_data():
     """数据加载与预处理流程"""
@@ -130,7 +131,7 @@ print(f"\n评估结果: 测试集损失={test_loss:.4f}, 准确率={test_accurac
 
 # 模型保存
 SAVE_PATH = "traffic_model.keras"
-model.save(SAVE_PATH)
+model.save(os.path.join(recent_PATH,  '..', 'models', SAVE_PATH))
 print(f"\n模型已保存至: {os.path.abspath(SAVE_PATH)}")
 
 # 模型加载验证
