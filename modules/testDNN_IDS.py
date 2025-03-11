@@ -23,7 +23,7 @@ matplotlib.use('TkAgg')
 # %% [2] 数据准备
 # 数据集路径配置
 recent_PATH = os.path.dirname(__file__)
-CSV_RELATIVE_PATH = os.path.join(recent_PATH,  '..', 'category', 'binary_classification.csv')
+CSV_FILE_PATH = os.path.join(recent_PATH,  '..', 'category', 'binary_classification.csv')
 
 def load_and_preprocess_data():
     """数据加载与预处理流程"""
@@ -33,31 +33,40 @@ def load_and_preprocess_data():
     # 标签编码（注意：当前使用Label列作为分类目标）
     df['Label'] = pd.Categorical(df['Label']).codes
     
-    # 类型转换（解决TensorFlow类型警告）
-    for col in df.columns:
-        if df[col].dtype != 'float32':
-            df[col] = df[col].astype('float32')
-    
     # 特征工程配置
-    features_considered = [
-        'Target', 'Bwd_Packet_Length_Min', 'Subflow_Fwd_Bytes',
+    features = [
+        'Bwd_Packet_Length_Min', 'Subflow_Fwd_Bytes',
         'Total_Length_of_Fwd_Packets', 'Fwd_Packet_Length_Mean',
         'Bwd_Packet_Length_Std', 'Flow_Duration', 'Flow_IAT_Std',
         'Init_Win_bytes_forward', 'Bwd_Packets/s', 'PSH_Flag_Count',
         'Average_Packet_Size'
     ]
-    feature_last = [col for col in features_considered if col != 'Target']
-    
-    return df[features_considered], feature_last
+
+    # 仅转换特征列为float32
+    df[features] = df[features].astype('float32')
+
+    return df[features], df['Label']
 
 # 执行数据准备
 start_time = datetime.datetime.now()
-feature_data, feature_columns = load_and_preprocess_data()
+data_feature, data_label = load_and_preprocess_data()
 
-# %% [3] 数据集划分
-# 注意：当前使用Target列作为标签，请根据实际情况确认
-train, test = train_test_split(feature_data, test_size=0.2)
-train, val = train_test_split(train, test_size=0.2)
+# %% [3] 数据集划分（关键修改）
+# 正确分离特征和标签
+X_train, X_test, y_train, y_test = train_test_split(
+    data_feature, 
+    data_label,
+    test_size=0.2,
+    stratify=data_label,  # 保持类别分布
+    random_state=42
+)
+
+X_train, X_val, y_train, y_val = train_test_split(
+    X_train, y_train,
+    test_size=0.2,
+    stratify=y_train,
+    random_state=42
+)
 
 # %% [4] 数据预处理管道
 def create_normalization_layer(training_features):
@@ -66,33 +75,26 @@ def create_normalization_layer(training_features):
     normalizer.adapt(training_features.values)
     return normalizer
 
-# 初始化标准化层
-train_features = train[feature_columns]
-normalizer = create_normalization_layer(train_features)
+# 初始化标准化层（使用训练数据）
+normalizer = create_normalization_layer(X_train)
 
-def df_to_dataset(dataframe, shuffle=True, batch_size=32):
-    """将DataFrame转换为TensorFlow Dataset对象"""
-    dataframe = dataframe.copy()
-    labels = dataframe.pop('Target')  # 提取标签列
-    
-    # 注意：此处使用Target作为标签，请确认与Label列的关系
-    ds = tf.data.Dataset.from_tensor_slices(
-        (dataframe[feature_columns].values, labels)
-    )
+def df_to_dataset(features, labels, shuffle=True, batch_size=32):
+    """创建TensorFlow数据集管道"""
+    dataset = tf.data.Dataset.from_tensor_slices((features, labels))
     if shuffle:
-        ds = ds.shuffle(buffer_size=len(dataframe))
-    return ds.batch(batch_size)
+        dataset = dataset.shuffle(buffer_size=len(features))
+    return dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
 # 创建数据管道
-BATCH_SIZE = 50
-train_ds = df_to_dataset(train, batch_size=BATCH_SIZE)
-val_ds = df_to_dataset(val, shuffle=False, batch_size=BATCH_SIZE)
-test_ds = df_to_dataset(test, shuffle=False, batch_size=BATCH_SIZE)
+BATCH_SIZE = 64
+train_ds = df_to_dataset(X_train, y_train, batch_size=BATCH_SIZE)
+val_ds = df_to_dataset(X_val, y_val, shuffle=False, batch_size=BATCH_SIZE)
+test_ds = df_to_dataset(X_test, y_test, shuffle=False, batch_size=BATCH_SIZE)
 
 # %% [5] 模型架构
 def build_dnn_model():
     """构建深度神经网络模型"""
-    return tf.keras.Sequential([
+    return tf.keras.Sequential([        # 以顺序堆叠（逐层线性叠加）​的方式快速搭建神经网络模型
         normalizer,  # 输入标准化层
         layers.Dense(20, activation='selu'),
         layers.Dense(20, activation='selu'),
@@ -114,28 +116,39 @@ def compile_and_train(model):
         metrics=['accuracy']
     )
     
-    return model.fit(
-        train_ds,
-        validation_data=val_ds,
-        epochs=20,
-        verbose=1
+    # 添加早停回调，防止过拟合并优化训练效率
+    early_stop = tf.keras.callbacks.EarlyStopping(
+        monitor='val_loss',     # 监控验证集损失
+        patience=5,             # 容忍连续5个epoch无改善
+        restore_best_weights=True  # 恢复最佳权重
     )
 
-# 执行训练
+    model.fit(
+    train_ds,                # 训练数据集
+    validation_data=val_ds,  # 验证数据集
+    epochs=50,               # 最大训练轮次
+    callbacks=[early_stop],  # 回调函数（此处为早停）
+    verbose=1                # 日志输出模式
+    )
+
+# 执行训练（保持不变）
 history = compile_and_train(model)
 
-# %% [7] 模型评估与保存
-# 测试集评估
-test_loss, test_accuracy = model.evaluate(test_ds)
-print(f"\n评估结果: 测试集损失={test_loss:.4f}, 准确率={test_accuracy:.4f}")
+# %% [7] 模型评估与保存（更新模型保存逻辑）
+# 保存最佳模型（而非最后一个epoch的模型）
+best_model = model  # 因为使用了restore_best_weights=True
+test_loss, test_accuracy = best_model.evaluate(test_ds)
 
-# 模型保存
-SAVE_PATH = "traffic_model.keras"
-model.save(os.path.join(recent_PATH,  '..', 'models', SAVE_PATH))
-print(f"\n模型已保存至: {os.path.abspath(SAVE_PATH)}")
+# 模型保存路径优化
+MODEL_SAVE_DIR = os.path.join(recent_PATH, '..', 'models')
+os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
+model_save_path = os.path.join(MODEL_SAVE_DIR, "traffic_model.keras")
+
+best_model.save(model_save_path)
+print(f"\n模型已保存至: {os.path.abspath(model_save_path)}")
 
 # 模型加载验证
-loaded_model = tf.keras.models.load_model(SAVE_PATH)
+loaded_model = tf.keras.models.load_model(model_save_path)
 loaded_loss, loaded_acc = loaded_model.evaluate(test_ds)
 print(f"加载模型验证: 准确率={loaded_acc:.4f}")
 
