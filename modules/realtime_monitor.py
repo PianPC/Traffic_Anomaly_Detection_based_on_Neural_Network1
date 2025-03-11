@@ -63,6 +63,7 @@ FEATURE_COLUMNS = [  # 必须与训练数据严格一致
 
 CONFIG = {
     "DNN": {
+        "feature_columns": FEATURE_COLUMNS, 
         "model_path": MODELS_DIR / "traffic_model.keras",
         "requires_window": False,
         "max_batch_size": 128,           # 新增：批量处理大小
@@ -70,6 +71,7 @@ CONFIG = {
         "threshold": 0.65                # 新增：DNN判断阈值
     },
     "LSTM": {
+        "feature_columns": FEATURE_COLUMNS,
         "model_path": MODELS_DIR / "lstm_traffic_model.keras",
         "window_size": 1000,
         "step": 6,
@@ -139,6 +141,8 @@ def init_system(model_type: str):
     except Exception as e:
         logger.exception("模型加载失败")
         exit(1)
+
+    return model
 
 def validate_model_input():
     """验证模型输入是否符合预期"""

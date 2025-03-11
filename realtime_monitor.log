@@ -4767,3 +4767,22 @@
 2025-03-11 21:18:40,920 [INFO] 正常流量 [LSTM] 类别0 流: (('13.229.119.116', <ShortEnumField (TCP,TCPerror).sport>), ('192.168.1.7', <ShortEnumField (TCP,TCPerror).dport>), 6) 置信度: 56.75%
 2025-03-11 21:18:40,940 [INFO] 正常流量 [LSTM] 类别0 流: (('13.229.119.116', <ShortEnumField (TCP,TCPerror).sport>), ('192.168.1.7', <ShortEnumField (TCP,TCPerror).dport>), 6) 置信度: 56.78%
 2025-03-11 21:18:41,315 [INFO] 程序退出，峰值内存占用: 62248KB
+2025-03-11 23:40:11,721 [INFO] 正在初始化 DNN 系统...
+2025-03-11 23:40:11,746 [INFO] 加载模型: E:\workplace\Code\VSCodeProject\Traffic_Anomaly_Detection_based_on_Neural_Network\models\traffic_model.keras
+2025-03-11 23:40:11,881 [INFO] 模型加载成功 (0.13s)
+2025-03-11 23:43:28,697 [INFO] 正在初始化 DNN 系统...
+2025-03-11 23:43:28,697 [INFO] 加载模型: E:\workplace\Code\VSCodeProject\Traffic_Anomaly_Detection_based_on_Neural_Network\models\traffic_model.keras
+2025-03-11 23:43:28,790 [INFO] 模型加载成功 (0.09s)
+2025-03-11 23:46:45,368 [INFO] 正在初始化 DNN 系统...
+2025-03-11 23:46:45,368 [INFO] 加载模型: E:\workplace\Code\VSCodeProject\Traffic_Anomaly_Detection_based_on_Neural_Network\models\traffic_model.keras
+2025-03-11 23:46:45,464 [INFO] 模型加载成功 (0.10s)
+2025-03-11 23:48:45,022 [INFO] 正在初始化 DNN 系统...
+2025-03-11 23:48:45,022 [INFO] 加载模型: E:\workplace\Code\VSCodeProject\Traffic_Anomaly_Detection_based_on_Neural_Network\models\traffic_model.keras
+2025-03-11 23:48:45,118 [INFO] 模型加载成功 (0.10s)
+2025-03-11 23:57:24,166 [INFO] 正在初始化 DNN 系统...
+2025-03-11 23:57:24,166 [INFO] 加载模型: E:\workplace\Code\VSCodeProject\Traffic_Anomaly_Detection_based_on_Neural_Network\models\traffic_model.keras
+2025-03-11 23:57:24,246 [INFO] 模型加载成功 (0.08s)
+2025-03-12 00:00:41,766 [INFO] 正在初始化 DNN 系统...
+2025-03-12 00:00:41,766 [INFO] 加载模型: E:\workplace\Code\VSCodeProject\Traffic_Anomaly_Detection_based_on_Neural_Network\models\traffic_model.keras
+2025-03-12 00:00:41,888 [INFO] 模型加载成功 (0.12s)
+2025-03-12 00:00:41,986 [ERROR] 模型输出维度应为1，当前为4
