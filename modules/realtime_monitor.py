@@ -1,287 +1,444 @@
-# # 使用DNN模型
-# python realtime_monitor.py --model_type DNN
+# 运行命令
+# python modules/realtime_monitor.py --model_type DNN
 
-# # 使用LSTM模型
-# python realtime_monitor.py --model_type LSTM
-# 实时流量监测脚本（支持DNN/LSTM双模型）
+#!/usr/bin/env python
+# coding=UTF-8
+"""
+实时流量异常检测系统（支持DNN/LSTM双模型）
+版本：2.1
+更新日志：
+- 增强线程安全性
+- 添加输入验证
+- 优化批量处理
+- 强化异常处理
+"""
+
+# %% 导入库
+import os
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # 新增：禁用oneDNN警告
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'   # 新增：减少TensorFlow日志
+
 import argparse
 import tensorflow as tf
 from scapy.all import sniff, IP, TCP, UDP
 import numpy as np
 import time
-import os
+import logging
 from collections import defaultdict
 import threading
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+import psutil
 
-# ----------------- 配置部分 -----------------
-# 基础路径配置
+# %% 全局配置
+predict_queue = []  # 确保在全局作用域初始化
+# 线程池配置
+from concurrent.futures import ThreadPoolExecutor
+predict_executor = ThreadPoolExecutor(max_workers=4)
+
+#region 配置部分
+# ----------------- 日志配置 -----------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler("realtime_monitor.log", encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger("TrafficMonitor")
+
+# ----------------- 路径配置 -----------------
 BASE_DIR = Path(__file__).parent.parent  # 项目根目录
-MODELS_DIR = BASE_DIR / 'models'         # 模型存储目录
+MODELS_DIR = BASE_DIR / "models"         # 模型存储目录
 
-# 模型参数配置字典
-# 包含DNN和LSTM两种模型的配置参数
+# ----------------- 模型参数配置 -----------------
+FEATURE_COLUMNS = [  # 必须与训练数据严格一致
+    'Bwd_Packet_Length_Min', 'Subflow_Fwd_Bytes',
+    'Total_Length_of_Fwd_Packets', 'Fwd_Packet_Length_Mean',
+    'Bwd_Packet_Length_Std', 'Flow_Duration', 'Flow_IAT_Std',
+    'Init_Win_bytes_forward', 'Bwd_Packets/s', 'PSH_Flag_Count',
+    'Average_Packet_Size'
+]
+
 CONFIG = {
-    'DNN': {  # 深度神经网络配置
-        'model_path': MODELS_DIR / 'traffic_model.keras',  # 模型文件路径
-        'requires_window': False  # 不需要时间窗口数据
+    "DNN": {
+        "model_path": MODELS_DIR / "traffic_model.keras",
+        "requires_window": False,
+        "max_batch_size": 128,           # 新增：批量处理大小
+        "input_dim": len(FEATURE_COLUMNS),
+        "threshold": 0.65                # 新增：DNN判断阈值
     },
-    'LSTM': {  # 长短期记忆网络配置
-        'model_path': MODELS_DIR / 'lstm_traffic_model.keras',
-        'window_size': 1000,   # 时间窗口大小（与训练时PAST_HISTRY一致）
-        'step': 6,            # 滑动步长（与训练时STEP一致）
-        'requires_window': True  # 需要时间窗口数据
+    "LSTM": {
+        "model_path": MODELS_DIR / "lstm_traffic_model.keras",
+        "window_size": 1000,
+        "step": 6,
+        "max_sequence_length": 166,      # 新增：1000//6=166
+        "requires_window": True,
+        "input_dim": len(FEATURE_COLUMNS),
+        "min_window": 30                 # 新增：最小有效窗口
     }
 }
 
-# 特征列定义（必须与训练时的特征顺序完全一致）
-FEATURE_COLUMNS = [
-    'Bwd_Packet_Length_Min',     # 后向包最小长度
-    'Subflow_Fwd_Bytes',         # 前向子流字节总数
-    'Total_Length_of_Fwd_Packets', # 前向包总长度
-    'Fwd_Packet_Length_Mean',    # 前向包平均长度
-    'Bwd_Packet_Length_Std',     # 后向包长度标准差
-    'Flow_Duration',             # 流持续时间
-    'Flow_IAT_Std',              # 流到达时间标准差
-    'Init_Win_bytes_forward',    # 前向初始窗口大小
-    'Bwd_Packets/s',             # 每秒后向包数量
-    'PSH_Flag_Count',            # PSH标记计数
-    'Average_Packet_Size'        # 平均包大小
-]
+# ----------------- 流表配置 -----------------
+FLOW_TIMEOUT = 120                       # 流超时时间（秒）
+MAX_PACKET_SIZE = 9000                   # 单个包最大字节数
+#endregion
 
-# ----------------- 全局变量 -----------------
-# 流表数据结构说明：
-# 使用defaultdict自动创建新流记录，键为五元组（src_ip, src_port, dst_ip, dst_port, proto）
-# 每个流记录包含以下字段：
+# %% 全局变量
+#region 全局状态
 flow_table = defaultdict(lambda: {
-    'start_time': None,       # 流开始时间
-    'last_seen': None,        # 最后观察到的时间
-    'fwd_packets': [],        # 前向包大小列表（用于统计）
-    'bwd_packets': [],        # 后向包大小列表
-    'timestamps': [],         # 包到达时间戳序列
-    'psh_flags': 0,           # PSH标记计数器
-    'init_win_bytes_fwd': None,  # 前向初始窗口大小（仅记录第一个包）
-    'subflow_fwd_bytes': 0,   # 前向子流字节累计
-    'feature_window': []      # LSTM专用特征缓存（存储历史特征序列）
+    "start_time": None,
+    "last_seen": None,
+    "fwd_packets": [],
+    "bwd_packets": [],
+    "timestamps": [],
+    "psh_flags": 0,
+    "init_win_bytes_fwd": None,
+    "subflow_fwd_bytes": 0,
+    "feature_window": []
 })
 
-# 全局模型相关变量
-model = None        # 当前加载的TF模型
-current_config = None  # 当前模型配置
-prediction_lock = threading.Lock()  # 预测线程锁（保证预测顺序）
+flow_table_lock = threading.Lock()       # 流表访问锁
+model = None                              # 当前模型实例
+current_config = None                     # 当前配置参数
+predict_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="Predictor")
+#endregion
 
-# ----------------- 核心逻辑函数 -----------------
-def init_resources(model_type):
-    """初始化模型和预处理工具
-    参数：
-        model_type : 模型类型 'DNN' 或 'LSTM'
+# %% 核心功能
+#region 初始化模块
+def init_system(model_type: str):
+    """
+    初始化系统资源
+    Args:
+        model_type: 模型类型 DNN/LSTM
     """
     global model, current_config
     
-    # 设置当前配置
-    current_config = CONFIG[model_type]
-    print(f"正在加载 {model_type} 模型...")
+    logger.info(f"正在初始化 {model_type} 系统...")
     
+    # 参数校验
+    if (cfg := CONFIG.get(model_type)) is None:
+        logger.error(f"无效的模型类型: {model_type}")
+        exit(1)
+    current_config = cfg
+    
+    # 模型加载
     try:
-        # 加载TensorFlow模型
-        model = tf.keras.models.load_model(current_config['model_path'])
+        logger.info(f"加载模型: {cfg['model_path'].resolve()}")
+        load_start = time.time()
+        model = tf.keras.models.load_model(
+            cfg["model_path"],
+            compile=False  # 预测不需要优化器
+        )
+        logger.info(f"模型加载成功 ({time.time()-load_start:.2f}s)")
+        
+        # 新增：模型输入验证
+        validate_model_input()
+        
     except Exception as e:
-        print(f"资源加载失败: {str(e)}")
+        logger.exception("模型加载失败")
         exit(1)
 
-
-def packet_handler(pkt):
-    # print(f"[DEBUG] 捕获到数据包: {pkt.summary()}")
-    """数据包处理函数（Scapy回调）
-    功能：
-        1. 解析网络包的五元组信息
-        2. 更新流统计信息
-        3. （LSTM）缓存特征窗口数据
-    参数：
-        pkt : Scapy解析的网络包对象
-    """
-    # 过滤非IP/TCP-UDP包
-    if not (IP in pkt and (TCP in pkt or UDP in pkt)):
-        return
-
-    # === 五元组提取 ===
-    src_ip, dst_ip = pkt[IP].src, pkt[IP].dst  # IP地址
-    proto = pkt[IP].proto                       # 协议类型（6=TCP, 17=UDP）
-    # 端口提取（根据协议类型选择TCP/UDP层）
-    src_port = pkt[TCP].sport if TCP in pkt else pkt[UDP].sport
-    dst_port = pkt[TCP].dport if TCP in pkt else pkt[UDP].dport
-    # 生成双向流统一键（排序IP对和端口对）
-    flow_key = tuple(sorted(((src_ip, src_port), (dst_ip, dst_port))) + [proto])
-
-    # === 流记录初始化 ===
-    flow = flow_table[flow_key]
-    if flow['start_time'] is None:
-        flow.update({
-            'start_time': pkt.time,  # 记录第一个包的时间
-            # 提取TCP初始窗口大小（仅第一个包有效）
-            'init_win_bytes_fwd': pkt[TCP].window if TCP in pkt else 0
-        })
-
-    # === 更新流统计 ===
-    packet_size = len(pkt)  # 当前包总长度
-    # 判断包方向（前向：src_ip是流的发起方）
-    is_forward = (pkt[IP].src == src_ip)
-    if is_forward:
-        flow['fwd_packets'].append(packet_size)
-        flow['subflow_fwd_bytes'] += packet_size
-    else:
-        flow['bwd_packets'].append(packet_size)
-
-    # 更新时间序列和PSH标记
-    flow['timestamps'].append(pkt.time)
-    if TCP in pkt and pkt[TCP].flags & 0x08:  # 检测PSH标记
-        flow['psh_flags'] += 1
-    flow['last_seen'] = pkt.time  # 更新最后活跃时间
-
-    # === 新增DNN实时预测触发 ===
-    if not current_config['requires_window']:  # DNN模型
-        features = extract_features(flow)
-        threading.Thread(target=async_predict, args=(features,)).start()
-
-    # 提取特征向量
-    features = extract_features(flow)
-
-    # === 根据模型类型立即触发预测 ===
-    if current_config['requires_window']:  # LSTM处理
-        flow['feature_window'].append(features)
-        # 当窗口达到大小时触发预测
-        if len(flow['feature_window']) >= current_config['window_size']:
-            window_data = flow['feature_window'][-current_config['window_size']::current_config['step']]
-            if len(window_data) == current_config['window_size'] // current_config['step']:
-                threading.Thread(target=async_predict, args=(window_data,)).start()
-                flow['feature_window'].clear()
-    else:  # DNN处理
-        threading.Thread(target=async_predict, args=([features],)).start()
-
-def extract_features(flow):
-    """从流记录中提取特征向量
-    返回：
-        按FEATURE_COLUMNS顺序排列的特征列表
-    """
-    # 后向包统计
-    bwd_packets = flow['bwd_packets'] or [0]  # 处理空列表情况
-    bwd_min = min(bwd_packets) if bwd_packets else 0.0
-    bwd_std = np.std(bwd_packets).astype('float32') if len(bwd_packets)>=2 else 0.0
-
-    # 前向包统计
-    fwd_packets = flow['fwd_packets'] or [0]
-    fwd_total = sum(fwd_packets)
-    fwd_mean = np.mean(fwd_packets).astype('float32') if fwd_packets else 0.0
-
-    # 时间统计
-    timestamps = flow['timestamps'] or [0]
-    flow_duration = timestamps[-1] - timestamps[0] if len(timestamps)>=2 else 1e-6
-    iat_std = np.std(np.diff(timestamps)).astype('float32') if len(timestamps)>=2 else 0.0
-
-    # 其他特征计算
-    bwd_packets_per_sec = len(bwd_packets)/flow_duration if flow_duration >0 else 0.0
-    avg_packet_size = (sum(fwd_packets)+sum(bwd_packets))/(len(fwd_packets)+len(bwd_packets)) if (fwd_packets or bwd_packets) else 0.0
-
-    # 严格按FEATURE_COLUMNS顺序返回
-    return [
-        bwd_min,                     # Bwd_Packet_Length_Min
-        flow['subflow_fwd_bytes'],    # Subflow_Fwd_Bytes
-        fwd_total,                   # Total_Length_of_Fwd_Packets
-        fwd_mean,                    # Fwd_Packet_Length_Mean
-        bwd_std,                     # Bwd_Packet_Length_Std
-        flow_duration,               # Flow_Duration
-        iat_std,                     # Flow_IAT_Std
-        flow['init_win_bytes_fwd'],   # Init_Win_bytes_forward
-        bwd_packets_per_sec,         # Bwd_Packets/s
-        flow['psh_flags'],           # PSH_Flag_Count
-        avg_packet_size              # Average_Packet_Size
-    ]
-
-def async_predict(features):
+def validate_model_input():
+    """验证模型输入是否符合预期"""
     try:
-        # 统一转换为numpy数组
-        features = np.array(features, dtype=np.float32)
-        
-        # ===== 新增维度校验逻辑 =====
-        if features.size == 0:
-            raise ValueError("空特征输入")
-            
-        expected_size = 11 * (current_config['window_size'] 
-                            if current_config['requires_window'] else 1)
-        
-        if features.size != expected_size:
-            print(f"[ERROR] 特征数量异常: 期望{expected_size} 实际{features.size}")
-            return
-        # ========================
-        
-        # 正确维度重塑
-        if current_config['requires_window']:
-            # LSTM输入需为 (1, window_size, 11)
-            input_data = features.reshape(1, 
-                                        current_config['window_size'], 
-                                        len(FEATURE_COLUMNS))
+        # 生成测试输入
+        if current_config["requires_window"]:
+            test_input = np.zeros(
+                (1, current_config["max_sequence_length"], current_config["input_dim"]),
+                dtype=np.float32
+            )
         else:
-            # DNN输入需为 (1, 11)
-            input_data = features.reshape(1, -1)
-        
-        # 添加调试日志
-        print(f"[DEBUG] 最终输入维度: {input_data.shape}")
+            test_input = np.zeros(
+                (1, current_config["input_dim"]),
+                dtype=np.float32
+            )
         
         # 执行预测
-        prediction = model.predict(input_data, verbose=0)
-        # ...后续处理...
-        
+        _ = model.predict(test_input, verbose=0)
+        logger.debug("模型输入验证通过")
     except Exception as e:
-        print(f"预测流程异常: {str(e)}")
+        logger.error("模型输入验证失败: " + str(e))
+        exit(1)
+#endregion
 
-def cleanup_flows():
-    """流清理函数（后台线程）
-    功能：
-        1. 定期检查并移除超时流
-        2. 对即将移除的流触发最终预测（LSTM）
-    """
-    while True:
-        # 清理间隔 = 窗口大小/4（默认30秒）
-        time.sleep(current_config.get('window_size', 120) // 4)
+#region 数据包处理
+def packet_handler(pkt):
+    """Scapy数据包处理回调"""
+    try:
+        # 基础过滤
+        if not (IP in pkt and (TCP in pkt or UDP in pkt)):
+            return
+
+        # 五元组提取
+        src_ip, dst_ip = pkt[IP].src, pkt[IP].dst
+        proto = pkt[IP].proto
+        layer = TCP if TCP in pkt else UDP
+        src_port, dst_port = layer.sport, layer.dport
         
-        current_time = time.time()
-        # 遍历流表副本（避免修改字典时迭代）
-        for flow_key in list(flow_table.keys()):
+        # 生成流键（规范化双向流）
+        flow_key = tuple(sorted(((src_ip, src_port), (dst_ip, dst_port))) + [proto])
+
+        # 线程安全更新流表
+        with flow_table_lock:
+            update_flow_stats(flow_key, pkt)
+
+        # 特征提取与预测触发
+        features = extract_features(flow_key)
+        trigger_prediction(flow_key, features)
+
+    except Exception as e:
+        logger.error(f"包处理异常: {str(e)}")
+
+def update_flow_stats(flow_key, pkt):
+    """更新流统计信息"""
+    flow = flow_table[flow_key]
+    
+    # 初始化流记录
+    if flow["start_time"] is None:
+        flow.update({
+            "start_time": pkt.time,
+            "init_win_bytes_fwd": pkt[TCP].window if TCP in pkt else 0
+        })
+
+    # 包方向判断
+    is_forward = pkt[IP].src == flow_key[0][0]
+    packet_size = min(len(pkt), MAX_PACKET_SIZE)  # 限制最大尺寸
+
+    # 更新统计字段
+    if is_forward:
+        flow["fwd_packets"].append(packet_size)
+        flow["subflow_fwd_bytes"] += packet_size
+    else:
+        flow["bwd_packets"].append(packet_size)
+
+    # 更新时间序列
+    flow["timestamps"].append(pkt.time)
+    flow["last_seen"] = pkt.time
+    
+    # 更新PSH标记
+    if TCP in pkt and pkt[TCP].flags & 0x08:
+        flow["psh_flags"] += 1
+#endregion
+
+#region 特征工程
+def extract_features(flow_key) -> list:
+    """从流记录中提取特征向量"""
+    try:
+        with flow_table_lock:
             flow = flow_table[flow_key]
             
-            # 判断流是否超时（120秒无活动）
-            if flow['last_seen'] and (current_time - flow['last_seen'] > 120):
-                # === LSTM最终预测 ===
-                if current_config['requires_window'] and flow['feature_window']:
-                    # 提取剩余窗口数据
-                    window = flow['feature_window'][-current_config['window_size']::current_config['step']]
-                    if len(window) >= (current_config['window_size'] // current_config['step']):
-                        async_predict(window[:current_config['window_size']//current_config['step']])
-                
-                # 删除流记录
-                del flow_table[flow_key]
+            # 数值稳定性处理
+            timestamps = flow["timestamps"] or [time.time()]
+            flow_duration = max(timestamps[-1] - timestamps[0], 1e-6)
+            
+            # 包统计
+            fwd_packets = flow["fwd_packets"][-1000:]  # 限制历史长度
+            bwd_packets = flow["bwd_packets"][-1000:]
+            
+            # 特征计算
+            return [
+                min(bwd_packets) if bwd_packets else 0.0,  # Bwd_Min
+                flow["subflow_fwd_bytes"],
+                sum(fwd_packets),
+                np.mean(fwd_packets).astype(np.float32) if fwd_packets else 0.0,
+                np.std(bwd_packets).astype(np.float32) if len(bwd_packets)>=2 else 0.0,
+                flow_duration,
+                np.std(np.diff(timestamps)).astype(np.float32) if len(timestamps)>=2 else 0.0,
+                flow["init_win_bytes_fwd"] or 0,
+                len(bwd_packets)/flow_duration if flow_duration > 0 else 0.0,
+                flow["psh_flags"],
+                (sum(fwd_packets)+sum(bwd_packets))/(len(fwd_packets)+len(bwd_packets)+1e-6)
+            ]
+    except Exception as e:
+        logger.error(f"特征提取失败: {str(e)}")
+        return [0.0] * len(FEATURE_COLUMNS)
+#endregion
 
-# ----------------- 主程序 -----------------
+#region 预测模块
+def trigger_prediction(flow_key, features):
+    """根据模型类型触发预测"""
+    try:
+        # DNN即时预测
+        if not current_config["requires_window"]:
+            if len(features) != current_config["input_dim"]:
+                logger.warning(f"特征维度错误: {len(features)}")
+                return
+            
+            # 加入批量队列
+            global predict_queue
+            predict_queue.append(features)
+            
+            # 批量处理
+            if len(predict_queue) >= current_config["max_batch_size"]:
+                batch = np.array(predict_queue, dtype=np.float32)
+                predict_queue.clear()
+                predict_executor.submit(run_prediction, batch, [flow_key]*len(batch))
+        
+        # LSTM窗口预测
+        else:
+            with flow_table_lock:
+                flow = flow_table[flow_key]
+                flow["feature_window"].append(features)
+                window = flow["feature_window"]
+            
+            # 窗口采样
+            if len(window) >= current_config["window_size"]:
+                sampled = window[-current_config["window_size"]::current_config["step"]]
+                if len(sampled) >= current_config["min_window"]:
+                    # 转换为模型输入格式
+                    input_seq = np.array(sampled[-current_config["max_sequence_length"]:], dtype=np.float32)
+                    predict_executor.submit(run_prediction, input_seq[np.newaxis, ...], flow_key)
+
+    except Exception as e:
+        logger.error(f"预测触发失败: {str(e)}")
+
+def run_prediction(input_data, flow_key):
+    """执行实际预测"""
+    try:
+        # 输入验证
+        if np.isnan(input_data).any():
+            logger.warning("输入包含NaN值")
+            return
+        
+        # 维度调整
+        if current_config["requires_window"]:
+            if input_data.shape[1:] != (current_config["max_sequence_length"], current_config["input_dim"]):
+                logger.error(f"LSTM输入维度错误: {input_data.shape}")
+                return
+        else:
+            if input_data.shape[1] != current_config["input_dim"]:
+                logger.error(f"DNN输入维度错误: {input_data.shape}")
+                return
+        
+        # 执行预测
+        start_time = time.time()
+        preds = model.predict(input_data, verbose=0)
+        logger.debug(f"预测耗时: {time.time()-start_time:.4f}s")
+        
+        # 结果处理
+        process_predictions(preds, flow_key)
+
+    except Exception as e:
+        logger.error(f"预测执行失败: {str(e)}")
+
+def process_predictions(preds, flow_key):
+    """处理模型输出并返回结果字典"""
+    results = []
+    try:
+        # DNN二分类处理
+        if not current_config["requires_window"]:
+            probabilities = tf.sigmoid(preds).numpy().flatten()
+            for i, prob in enumerate(probabilities):
+                is_anomaly = prob > current_config["threshold"]
+                status = "异常" if is_anomaly else "正常"
+                
+                # 构建结果字典
+                result = {
+                    "flow_key": flow_key[i] if isinstance(flow_key, list) else flow_key,
+                    "model_type": "DNN",
+                    "probability": float(prob),
+                    "status": status,
+                    "timestamp": time.time()
+                }
+                results.append(result)
+                
+                # 差异化日志输出
+                log_msg = f"{status}流量 [DNN] 流: {result['flow_key']} 概率: {prob:.2%}"
+                logger.warning(log_msg) if is_anomaly else logger.info(log_msg)
+
+        # LSTM多分类处理
+        else:
+            class_ids = np.argmax(preds, axis=1)
+            for i, cid in enumerate(class_ids):
+                confidence = preds[i][cid]
+                is_anomaly = (cid != 0)  # 假设类别0为正常
+                status = "异常" if is_anomaly else "正常"
+                
+                result = {
+                    "flow_key": flow_key,
+                    "model_type": "LSTM",
+                    "class_id": int(cid),
+                    "confidence": float(confidence),
+                    "status": status,
+                    "timestamp": time.time()
+                }
+                results.append(result)
+                
+                log_msg = f"{status}流量 [LSTM] 类别{cid} 流: {flow_key} 置信度: {confidence:.2%}"
+                logger.warning(log_msg) if is_anomaly else logger.info(log_msg)
+        
+        return results  # 返回结构化结果
+
+    except Exception as e:
+        logger.error(f"结果处理失败: {str(e)}")
+        return []
+
+#region 维护模块
+def cleanup_flows():
+    """定期清理过期流"""
+    while True:
+        time.sleep(FLOW_TIMEOUT // 2)  # 每60秒清理一次
+        
+        try:
+            current_time = time.time()
+            cleanup_count = 0
+            
+            with flow_table_lock:
+                for flow_key in list(flow_table.keys()):
+                    flow = flow_table[flow_key]
+                    
+                    # 判断超时
+                    if flow["last_seen"] and (current_time - flow["last_seen"] > FLOW_TIMEOUT):
+                        # LSTM窗口处理
+                        if current_config["requires_window"] and flow["feature_window"]:
+                            window = flow["feature_window"]
+                            if len(window) >= current_config["min_window"]:
+                                sampled = window[-current_config["window_size"]::current_config["step"]]
+                                if len(sampled) >= current_config["min_window"]:
+                                    input_seq = np.array(sampled, dtype=np.float32)
+                                    run_prediction(input_seq[np.newaxis, ...], flow_key)
+                        
+                        del flow_table[flow_key]
+                        cleanup_count += 1
+            
+            logger.info(f"流清理完成，删除{cleanup_count}个流，当前活跃流数: {len(flow_table)}")
+            
+        except Exception as e:
+            logger.error(f"流清理失败: {str(e)}")
+#endregion
+
+# %% 主程序
 if __name__ == "__main__":
-    # 命令行参数解析
+    # 参数解析
     parser = argparse.ArgumentParser(description="实时流量异常检测系统")
-    parser.add_argument('--model_type', choices=['DNN', 'LSTM'], required=True,
-                       help="选择检测模型类型：DNN 或 LSTM")
+    parser.add_argument("--model_type", choices=["DNN", "LSTM"], required=True)
     args = parser.parse_args()
 
-    # 初始化模型和资源
-    init_resources(args.model_type)
-
-    # 启动后台清理线程（daemon=True随主线程退出）
-    threading.Thread(target=cleanup_flows, daemon=True).start()
-
-    # 打印启动信息
-    print(f"启动 {args.model_type} 流量监测...")
+    # 资源初始化
+    start_mem = psutil.Process().memory_info().rss  # 获取内存占用（字节）
     
-    # 启动抓包（使用Scapy）
-    sniff(
-        prn=packet_handler,    # 每个包的回调处理
-        filter="tcp or udp",   # 过滤TCP/UDP流量
-        store=False,           # 不存储原始包（节省内存）
-        stop_filter=lambda x: False  # 持续运行直到手动终止
-    )
+    init_system(args.model_type)
+    
+    try:
+        # 启动维护线程
+        threading.Thread(target=cleanup_flows, daemon=True, name="Cleaner").start()
+        
+        # 开始抓包
+        logger.info(f"启动{args.model_type}监测，初始内存占用: {start_mem // 1024}KB")
+        sniff(
+            prn=packet_handler,
+            filter="tcp or udp",
+            store=False,
+            stop_filter=lambda _: False,
+            count=0  # 无限抓包
+        )
+
+    except KeyboardInterrupt:
+        logger.info("用户终止操作")
+    finally:
+        # 资源清理
+        predict_executor.shutdown()
+        end_mem = psutil.Process().memory_info().rss
+        logger.info(f"程序退出，峰值内存占用: {(end_mem - start_mem) // 1024}KB")
