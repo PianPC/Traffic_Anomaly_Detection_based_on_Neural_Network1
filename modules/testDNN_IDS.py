@@ -27,12 +27,14 @@ CSV_FILE_PATH = os.path.join(recent_PATH,  '..', 'category', 'binary_classificat
 
 def load_and_preprocess_data():
     """数据加载与预处理流程"""
-    # 加载原始数据
     df = pd.read_csv(CSV_FILE_PATH)
     
-    # 标签编码（注意：当前使用Label列作为分类目标）
-    df['Label'] = pd.Categorical(df['Label']).codes
-    
+    # 获取唯一标签类别数量和编码
+    label_categories = pd.Categorical(df['Label'])
+    global n_classes  # 声明为全局变量以便模型构建使用
+    n_classes = len(label_categories.categories)
+    print(n_classes)
+    df['Label'] = label_categories.codes  # 生成数字编码标签  
     # 特征工程配置
     features = [
         'Bwd_Packet_Length_Min', 'Subflow_Fwd_Bytes',
@@ -102,7 +104,7 @@ def build_dnn_model():
         layers.Dense(20, activation='selu'),
         # 注意：输出层设置为4个单元，适用于四分类任务
         # 如果是二分类任务，建议改为1个单元+sigmoid激活
-        layers.Dense(4, activation='softmax')
+        layers.Dense(n_classes, activation='softmax')
     ])
 
 model = build_dnn_model()

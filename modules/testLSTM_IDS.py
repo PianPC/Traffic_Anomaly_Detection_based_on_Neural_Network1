@@ -25,9 +25,15 @@ BATCH_SIZE = 256
 
 # %% [2] 数据加载管道（保持原始数据）
 def load_data(file_path):
-    """加载数据并保留原始数值"""
     df = pd.read_csv(file_path)
-    df['Label'] = df['Label'].astype('category').cat.codes  # 标签编码
+    df['Label'] = df['Label'].astype('category').cat.codes
+    
+    # 新增：检查标签编码范围
+    max_label = df['Label'].max()
+    min_label = df['Label'].min()
+    assert min_label >= 0, "标签编码出现负值"
+    assert max_label == (len(df['Label'].unique())-1), "标签编码不连续"
+    
     return df
 
 # %% [3] 特征工程
@@ -40,7 +46,7 @@ def select_features(df):
         'Init_Win_bytes_forward', 'Bwd_Packets/s', 'PSH_Flag_Count',
         'Average_Packet_Size'
     ]
-    labels = ['Target']
+    labels = ['Label']
     return df[features], df[labels]
 
 # %% [4] 时序数据生成器（处理原始数据）
@@ -63,6 +69,7 @@ def create_time_series(features, labels, start_idx, end_idx, hist_size, pred_siz
 if __name__ == "__main__":
     # 加载原始数据
     raw_df = load_data(CSV_RELATIVE_PATH)
+    num_classes = len(raw_df['Label'].unique())    # 加载数据后获取类别数量
     features, labels = select_features(raw_df)
 
     # 分割数据集（保持时序）
@@ -98,15 +105,15 @@ if __name__ == "__main__":
         normalization_layer,  # 集成标准化层
         tf.keras.layers.LSTM(64, return_sequences=False),
         tf.keras.layers.Dense(32, activation='relu'),
-        tf.keras.layers.Dense(1, activation='sigmoid')
+        tf.keras.layers.Dense(num_classes, activation='softmax')  # 动态设置输出单元数
     ])
     # ==============================================
     
     # 编译模型
     model.compile(
         optimizer='adam',
-        loss='binary_crossentropy',
-        metrics=['accuracy', tf.keras.metrics.AUC(name='auc')]
+        loss='sparse_categorical_crossentropy',  # 适用整数标签
+        metrics=['accuracy', tf.keras.metrics.AUC(name='auc', multi_label=True)]
     )
 
     # 数据管道
