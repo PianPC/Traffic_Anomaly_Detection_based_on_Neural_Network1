@@ -15,6 +15,7 @@ import tensorflow as tf
 from tensorflow.keras import layers
 from sklearn.model_selection import train_test_split
 
+
 # 配置TensorFlow日志级别和Matplotlib后端
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 import matplotlib
@@ -30,11 +31,10 @@ def load_and_preprocess_data():
     df = pd.read_csv(CSV_FILE_PATH)
     
     # 获取唯一标签类别数量和编码
-    label_categories = pd.Categorical(df['Label'])
-    global n_classes  # 声明为全局变量以便模型构建使用
+    label_categories = pd.Categorical(df['Label'])      # 自动提取所有唯一标签类别，Categories (4, object): ['BENIGN', 'DDoS', 'DoS Hulk', 'PortScan']
+    global n_classes
     n_classes = len(label_categories.categories)
-    print(n_classes)
-    df['Label'] = label_categories.codes  # 生成数字编码标签  
+    df['Label'] = label_categories.codes                # 生成数字编码标签  
     # 特征工程配置
     features = [
         'Bwd_Packet_Length_Min', 'Subflow_Fwd_Bytes',
@@ -54,15 +54,22 @@ start_time = datetime.datetime.now()
 data_feature, data_label = load_and_preprocess_data()
 
 # %% [3] 数据集划分（关键修改）
-# 正确分离特征和标签
+# 正确分离特征和标签,测试集：用于最终评估模型性能（仅在训练完成后使用）。​验证集：用于训练过程中调整超参数（如学习率、正则化强度）。
+"""
+80% 数据作为训练集（X_train, y_train）。
+20% 数据作为测试集（X_test, y_test）。
+"""
 X_train, X_test, y_train, y_test = train_test_split(
-    data_feature, 
-    data_label,
-    test_size=0.2,
+    data_feature, data_label,
+    test_size=0.2,        # 测试集占20%
     stratify=data_label,  # 保持类别分布
-    random_state=42
+    random_state=42       # 随机种子固定划分结果（可复现）
 )
 
+'''
+原训练集的 80% 作为新训练集（X_train, y_train）。
+原训练集的 20% 作为验证集（X_val, y_val）。
+'''
 X_train, X_val, y_train, y_val = train_test_split(
     X_train, y_train,
     test_size=0.2,
@@ -73,23 +80,23 @@ X_train, X_val, y_train, y_val = train_test_split(
 # %% [4] 数据预处理管道
 def create_normalization_layer(training_features):
     """创建数据标准化层"""
-    normalizer = tf.keras.layers.Normalization(axis=-1)
-    normalizer.adapt(training_features.values)
-    return normalizer
+    normalizer = tf.keras.layers.Normalization(axis=-1) # 创建一个标准化层，用于对输入数据进行标准化（(x - mean) / std），axis=-1 表示对每个特征单独计算均值和方差
+    normalizer.adapt(training_features.values)          # .values 将其转换为 NumPy 数组
+    return normalizer                                   # 该层可直接集成到 Keras 模型中
 
 # 初始化标准化层（使用训练数据）
 normalizer = create_normalization_layer(X_train)
 
 def df_to_dataset(features, labels, shuffle=True, batch_size=32):
     """创建TensorFlow数据集管道"""
-    dataset = tf.data.Dataset.from_tensor_slices((features, labels))
+    dataset = tf.data.Dataset.from_tensor_slices((features, labels))    # 转换数据属性方便后续计算
     if shuffle:
-        dataset = dataset.shuffle(buffer_size=len(features))
-    return dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
+        dataset = dataset.shuffle(buffer_size=len(features))        # 打乱数据顺序，防止模型因数据排列规律产生偏差
+    return dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)     # 将数据按指定 batch_size/每次分批次,.prefetch(tf.data.AUTOTUNE):在训练过程中预加载下一批数据，减少 CPU 数据准备与 GPU 模型计算的等待时间。tf.data.AUTOTUNE：自动调整预加载缓冲区大小，最大化硬件利用率
 
 # 创建数据管道
 BATCH_SIZE = 64
-train_ds = df_to_dataset(X_train, y_train, batch_size=BATCH_SIZE)
+train_ds = df_to_dataset(X_train, y_train, batch_size=BATCH_SIZE)       # X_train, y_train：只是静态存储数据，无法直接支持打乱、分批、预处理等操作。train_ds：封装了数据处理的完整流程（打乱、分批、增强、预加载），可直接输入模型训练。
 val_ds = df_to_dataset(X_val, y_val, shuffle=False, batch_size=BATCH_SIZE)
 test_ds = df_to_dataset(X_test, y_test, shuffle=False, batch_size=BATCH_SIZE)
 
@@ -98,13 +105,13 @@ def build_dnn_model():
     """构建深度神经网络模型"""
     return tf.keras.Sequential([        # 以顺序堆叠（逐层线性叠加）​的方式快速搭建神经网络模型
         normalizer,  # 输入标准化层
-        layers.Dense(20, activation='selu'),
+        layers.Dense(20, activation='selu'),    # 激活函数为 ​SELU,自归一化激活函数，适合深层网络。
         layers.Dense(20, activation='selu'),
         layers.Dense(20, activation='selu'),
         layers.Dense(20, activation='selu'),
         # 注意：输出层设置为4个单元，适用于四分类任务
         # 如果是二分类任务，建议改为1个单元+sigmoid激活
-        layers.Dense(n_classes, activation='softmax')
+        layers.Dense(n_classes, activation='softmax')   # Softmax 的作用：将输出转换为概率分布，适用于多分类任务
     ])
 
 model = build_dnn_model()
@@ -151,7 +158,7 @@ print(f"\n模型已保存至: {os.path.abspath(model_save_path)}")
 
 # 模型加载验证
 loaded_model = tf.keras.models.load_model(model_save_path)
-loaded_loss, loaded_acc = loaded_model.evaluate(test_ds)
+loaded_loss, loaded_acc = loaded_model.evaluate(test_ds)        # model.predict()获取预测结果
 print(f"加载模型验证: 准确率={loaded_acc:.4f}")
 
 # %% [8] 耗时统计

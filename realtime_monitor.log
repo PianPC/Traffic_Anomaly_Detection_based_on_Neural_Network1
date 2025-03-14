@@ -10602,3 +10602,21 @@
 2025-03-12 13:46:12,174 [INFO] 正常流量 [DNN] 流: (('113.96.19.181', <ShortEnumField (TCP,TCPerror).dport>), ('192.168.1.19', <ShortEnumField (TCP,TCPerror).sport>), 6) 概率: 50.03%
 2025-03-12 13:46:12,174 [ERROR] 结果处理失败: list index out of range
 2025-03-12 13:46:17,150 [INFO] 程序退出，峰值内存占用: 34612KB
+2025-03-12 14:45:33,382 [INFO] 正在初始化 DNN 系统...
+2025-03-12 14:45:33,383 [INFO] 加载模型: E:\workplace\Code\VSCodeProject\Traffic_Anomaly_Detection_based_on_Neural_Network\models\traffic_model.keras
+2025-03-12 14:45:33,615 [INFO] 模型加载成功 (0.23s)
+2025-03-12 14:45:33,668 [ERROR] 模型输入验证失败: Exception encountered when calling Normalization.call().
+
+[1mDimensions must be equal, but are 14 and 11 for '{{node sequential_1/normalization_1/Sub}} = Sub[T=DT_FLOAT](data, sequential_1/normalization_1/Sub/y)' with input shapes: [1,14], [1,11].[0m
+
+Arguments received by Normalization.call():
+  • inputs=tf.Tensor(shape=(1, 14), dtype=float32)
+2025-03-12 14:46:08,312 [INFO] 正在初始化 DNN 系统...
+2025-03-12 14:46:08,313 [INFO] 加载模型: E:\workplace\Code\VSCodeProject\Traffic_Anomaly_Detection_based_on_Neural_Network\models\traffic_model.keras
+2025-03-12 14:46:08,541 [INFO] 模型加载成功 (0.23s)
+2025-03-12 14:46:08,594 [ERROR] 模型输入验证失败: Exception encountered when calling Normalization.call().
+
+[1mDimensions must be equal, but are 14 and 11 for '{{node sequential_1/normalization_1/Sub}} = Sub[T=DT_FLOAT](data, sequential_1/normalization_1/Sub/y)' with input shapes: [1,14], [1,11].[0m
+
+Arguments received by Normalization.call():
+  • inputs=tf.Tensor(shape=(1, 14), dtype=float32)
