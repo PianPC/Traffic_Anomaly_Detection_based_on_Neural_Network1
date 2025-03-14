@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>流量异常检测系统</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <h1>流量异常检测系统</h1>
+        
+        <!-- 功能选择 -->
+        <div class="tabs">
+            <button onclick="showTab('realtime')">实时监测</button>
+            <button onclick="showTab('historical')">历史检测</button>
+            <button onclick="showTab('train')">模型训练</button>
+        </div>
+
+        <!-- 实时监测面板 -->
+        <div id="realtime" class="tab-content active">
+            <h2>实时流量监测</h2>
+            <select id="realtime-model">
+                <option value="DNN">DNN模型</option>
+                <option value="LSTM">LSTM模型</option>
+            </select>
+            <button onclick="startRealtime()">启动监测</button>
+            <button onclick="stopRealtime()">停止监测</button>
+            <div class="console">
+                <pre id="realtime-content"></pre>
+                <div id="realtime-status" style="color: #ff0000;">监测已停止</div>
+            </div>
+        </div>
+
+        <!-- 历史检测面板 -->
+        <div id="historical" class="tab-content">
+            <h2>历史数据分析</h2>
+            <input type="file" id="data-file" accept=".csv">
+            <select id="historical-model">
+                <option value="DNN">DNN模型</option>
+                <option value="LSTM">LSTM模型</option>
+            </select>
+            <select id="historical-mode">
+                <option value="predict">预测模式</option>
+                <option value="evaluate">评估模式</option>
+            </select>
+            <button onclick="runHistorical()">执行分析</button>
+            <pre id="historical-result"></pre>
+        </div>
+
+        <!-- 模型训练面板 -->
+        <div id="train" class="tab-content">
+            <h2>模型训练</h2>
+            <select id="train-model">
+                <option value="DNN">DNN模型</option>
+                <option value="LSTM">LSTM模型</option>
+            </select>
+            <input type="number" id="epochs" placeholder="训练轮数" value="10" min="1">
+            <input type="number" id="batch-size" placeholder="批次大小" value="32" min="1">
+            <button onclick="startTraining()">开始训练</button>
+            <div id="training-status"></div>
+        </div>
+    </div>
+
+    <script>
+        // 标签页切换
+        function showTab(tabName) {
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            document.getElementById(tabName).classList.add('active');
+        }
+
+        // 实时监测控制
+        let outputInterval;
+
+        function updateRealtimeOutput() {
+            axios.get('/realtime/output')
+                .then(response => {
+                    const content = document.getElementById('realtime-content');
+                    content.textContent = response.data.output;
+                    
+                    // 自动滚动到底部
+                    content.scrollTop = content.scrollHeight;
+                    
+                    // 更新状态显示
+                    const statusDiv = document.getElementById('realtime-status');
+                    statusDiv.textContent = response.data.active 
+                        ? "实时监测运行中..." 
+                        : "监测已停止";
+                    statusDiv.style.color = response.data.active 
+                        ? "#00ff00" 
+                        : "#ff0000";
+                });
+        }
+
+        function startRealtime() {
+            const modelType = document.getElementById('realtime-model').value;
+            
+            axios.post('/realtime', { model_type: modelType })
+                .then(() => {
+                    outputInterval = setInterval(updateRealtimeOutput, 500);
+                    updateRealtimeOutput();  // 立即更新
+                })
+                .catch(err => {
+                    console.error('启动失败:', err);
+                    alert('启动失败: ' + err.response?.data?.error || err.message);
+                });
+        }
+
+        function stopRealtime() {
+            clearInterval(outputInterval);
+            axios.delete('/realtime')
+                .then(() => updateRealtimeOutput())
+                .catch(err => console.error('停止失败:', err));
+        }
+
+        // 历史检测执行
+        async function runHistorical() {
+            const fileInput = document.getElementById('data-file');
+            if (!fileInput.files.length) {
+                alert('请选择要上传的文件');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+            formData.append('model_type', document.getElementById('historical-model').value);
+            formData.append('mode', document.getElementById('historical-mode').value);
+
+            try {
+                const response = await axios.post('/historical', formData, {
+                    headers: { 'Content-Type': 'multipart/form-data' }
+                });
+                
+                const resultDiv = document.getElementById('historical-result');
+                resultDiv.textContent = response.data.output || response.data.error;
+                
+                if (response.data.error) {
+                    resultDiv.style.color = '#ff0000';
+                }
+            } catch (err) {
+                console.error('分析失败:', err);
+                document.getElementById('historical-result').textContent = 
+                    '分析失败: ' + (err.response?.data?.error || err.message);
+            }
+        }
+
+        // 模型训练
+        async function startTraining() {
+            const params = {
+                model_type: document.getElementById('train-model').value,
+                epochs: document.getElementById('epochs').value,
+                batch_size: document.getElementById('batch-size').value
+            };
+            
+            try {
+                const response = await axios.post('/train', params);
+                const statusDiv = document.getElementById('training-status');
+                statusDiv.innerHTML = `
+                    训练已启动，任务ID: ${response.data.job_id}<br>
+                    <a href="javascript:void(0)" onclick="checkTrainingStatus('${response.data.job_id}')">查看状态</a>
+                `;
+            } catch (err) {
+                console.error('训练启动失败:', err);
+                document.getElementById('training-status').textContent = 
+                    '启动失败: ' + (err.response?.data?.error || err.message);
+            }
+        }
+
+        // 查看训练状态
+        function checkTrainingStatus(jobId) {
+            axios.get(`/train/status/${jobId}`)
+                .then(response => {
+                    const status = response.data;
+                    alert(`训练状态: ${status.status}\n持续时间: ${Math.round(status.duration)}秒`);
+                })
+                .catch(err => console.error('状态查询失败:', err));
+        }
+    </script>
+</body>
+</html>

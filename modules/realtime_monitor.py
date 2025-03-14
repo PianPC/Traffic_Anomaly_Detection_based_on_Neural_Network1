@@ -31,6 +31,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 import psutil
 
+
 # %% 全局配置
 predict_queue = []  # 确保在全局作用域初始化
 # 线程池配置
