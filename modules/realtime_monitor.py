@@ -15,6 +15,7 @@
 
 # %% 导入库
 import os
+import json
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # 新增：禁用oneDNN警告
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'   # 新增：减少TensorFlow日志
 
@@ -61,6 +62,25 @@ FEATURE_COLUMNS = [  # 必须与训练数据严格一致
     'Average_Packet_Size'
 ]
 
+# %% 新增全局状态类
+class SystemState:
+    """管理全局状态"""
+    def __init__(self):
+        self.label_map = self._load_label_map()
+        
+    def _load_label_map(self):
+        """加载标签映射文件"""
+        label_path = MODELS_DIR / "label_mapping.json"
+        try:
+            with open(label_path, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"标签映射加载失败: {str(e)}")
+            exit(1)
+
+# 初始化全局状态
+system_state = SystemState()
+
 CONFIG = {
     "DNN": {
         "feature_columns": FEATURE_COLUMNS, 
@@ -68,7 +88,7 @@ CONFIG = {
         "requires_window": False,
         "max_batch_size": 128,           # 新增：批量处理大小
         "input_dim": len(FEATURE_COLUMNS),
-        "threshold": 0.65                # 新增：DNN判断阈值
+        "normal_class": "BENIGN"  # 替代原来的threshold
     },
     "LSTM": {
         "feature_columns": FEATURE_COLUMNS,
@@ -78,7 +98,8 @@ CONFIG = {
         "max_sequence_length": 166,      # 新增：1000//6=166
         "requires_window": True,
         "input_dim": len(FEATURE_COLUMNS),
-        "min_window": 30                 # 新增：最小有效窗口
+        "min_window": 30,                 # 新增：最小有效窗口
+        "normal_class": "BENIGN"
     }
 }
 
@@ -328,52 +349,66 @@ def run_prediction(input_data, flow_key):
         logger.error(f"预测执行失败: {str(e)}")
 
 def process_predictions(preds, flow_key):
-    """处理模型输出并返回结果字典"""
+    """统一处理多分类预测结果"""
+    label_map = system_state.label_map
     results = []
     try:
-        # DNN二分类处理
-        if not current_config["requires_window"]:
-            probabilities = tf.sigmoid(preds).numpy().flatten()
-            for i, prob in enumerate(probabilities):
-                is_anomaly = prob > current_config["threshold"]
-                status = "异常" if is_anomaly else "正常"
-                
-                # 构建结果字典
-                result = {
-                    "flow_key": flow_key[i] if isinstance(flow_key, list) else flow_key,
-                    "model_type": "DNN",
-                    "probability": float(prob),
-                    "status": status,
-                    "timestamp": time.time()
-                }
-                results.append(result)
-                
-                # 差异化日志输出
-                log_msg = f"{status}流量 [DNN] 流: {result['flow_key']} 概率: {prob:.2%}"
-                logger.warning(log_msg) if is_anomaly else logger.info(log_msg)
-
-        # LSTM多分类处理
-        else:
-            class_ids = np.argmax(preds, axis=1)
-            for i, cid in enumerate(class_ids):
-                confidence = preds[i][cid]
-                is_anomaly = (cid != 0)  # 假设类别0为正常
-                status = "异常" if is_anomaly else "正常"
-                
-                result = {
-                    "flow_key": flow_key,
-                    "model_type": "LSTM",
-                    "class_id": int(cid),
-                    "confidence": float(confidence),
-                    "status": status,
-                    "timestamp": time.time()
-                }
-                results.append(result)
-                
-                log_msg = f"{status}流量 [LSTM] 类别{cid} 流: {flow_key} 置信度: {confidence:.2%}"
-                logger.warning(log_msg) if is_anomaly else logger.info(log_msg)
+        # 获取配置信息
+        is_multiclass = len(system_state.label_map) > 2
         
-        return results  # 返回结构化结果
+        # DNN模型处理（适配多分类）
+        if not current_config["requires_window"]:
+            if is_multiclass:
+                # 多分类使用softmax
+                probabilities = tf.nn.softmax(preds).numpy()
+            else:
+                # 二分类使用sigmoid
+                probabilities = tf.sigmoid(preds).numpy()
+        # LSTM模型处理
+        else:
+            probabilities = tf.nn.softmax(preds).numpy()
+
+        # 统一结果处理
+        for i, prob_vec in enumerate(probabilities):
+            # 获取预测类别
+            class_id = np.argmax(prob_vec)
+            confidence = prob_vec[class_id]
+            
+            # 从标签映射获取类别信息
+            class_info = system_state.label_map.get(str(class_id), "UNKNOWN")
+            
+            # 解析是否为异常（BENIGN类为正常）
+            is_anomaly = (class_info != "BENIGN")
+            status = "异常" if is_anomaly else "正常"
+            
+            # 构建结果字典
+            result = {
+                "flow_key": flow_key[i] if isinstance(flow_key, list) else flow_key,
+                "model_type": "DNN" if not current_config["requires_window"] else "LSTM",
+                "class_id": int(class_id),
+                "class_name": class_info,
+                "confidence": float(confidence),
+                "is_anomaly": is_anomaly,
+                "timestamp": time.time()
+            }
+            results.append(result)
+            
+            # 生成日志信息
+            log_msg = (
+                f"{status}流量 [{result['model_type']}] "
+                f"类别: {class_info}({class_id}) "
+                f"置信度: {confidence:.2%} "
+                f"流: {result['flow_key']}"
+            )
+            
+            # 差异化日志输出
+            if is_anomaly:
+                logger.warning(log_msg)
+                # 此处可添加警报触发逻辑
+            else:
+                logger.info(log_msg)
+
+        return results
 
     except Exception as e:
         logger.error(f"结果处理失败: {str(e)}")

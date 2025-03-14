@@ -6,6 +6,7 @@
 
 # %% [1] 环境配置
 import os
+import json
 import numpy as np
 import pandas as pd
 import tensorflow as tf
@@ -30,7 +31,8 @@ def load_and_preprocess_data(CSV_FILE_PATH):
     
     # 获取唯一标签类别数量和编码
     label_categories = pd.Categorical(df['Label'])      # 自动提取所有唯一标签类别，Categories (4, object): ['BENIGN', 'DDoS', 'DoS Hulk', 'PortScan']
-    global n_classes
+    global n_classes, class_names
+    class_names = label_categories.categories.tolist()  # 获取类别名称列表
     n_classes = len(label_categories.categories)
     df['Label'] = label_categories.codes                # 生成数字编码标签  
     # 特征工程配置
@@ -152,7 +154,17 @@ if __name__ == "__main__":
     # 保存完整模型（包含标准化层参数）
     model_save_path = os.path.join(recent_PATH, '..', 'models', 'lstm_traffic_model.keras')
     model.save(model_save_path)
+    
     print(f"模型已保存至 {model_save_path}")
+
+    # 保存标签映射（新增关键部分）
+    label_mapping = {str(i): name for i, name in enumerate(class_names)}
+    label_map_path = os.path.join(os.path.dirname(model_save_path), 'label_mapping.json')
+    with open(label_map_path, 'w') as f:
+        json.dump(label_mapping, f, indent=2)
+    
+    print(f"模型已保存至: {model_save_path}")
+    print(f"标签映射已保存至: {label_map_path}")
 
     # 模型加载验证
     loaded_model = tf.keras.models.load_model(model_save_path)
