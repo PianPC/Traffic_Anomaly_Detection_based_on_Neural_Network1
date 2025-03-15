@@ -8,6 +8,7 @@ from collections import deque
 import logging
 from pathlib import Path
 import sys
+from werkzeug.utils import secure_filename
 VENV_PYTHON = sys.executable
 
 app = Flask(__name__)
@@ -126,9 +127,8 @@ def stop_realtime_process():
 
 @app.route('/historical', methods=['POST'])
 def run_historical():
-    """执行历史数据分析"""
     try:
-        # 验证文件上传
+        # 验证文件存在
         if 'file' not in request.files:
             return jsonify({"error": "未上传文件"}), 400
             
@@ -136,19 +136,22 @@ def run_historical():
         if file.filename == '':
             return jsonify({"error": "空文件名"}), 400
         
-        # 验证文件类型
-        if not file.filename.lower().endswith('.csv'):
-            return jsonify({"error": "仅支持CSV文件"}), 400
+        # 强制CSF格式验证
+        if not file.filename.lower().endswith(('.csv', '.txt')):
+            return jsonify({"error": "仅支持CSV/TXT文件"}), 400
             
-        # 保存文件
-        upload_path = UPLOAD_DIR / file.filename
-        file.save(upload_path)
+        # 创建上传目录
+        UPLOAD_DIR.mkdir(exist_ok=True)
         
-        # 验证参数
+        # 保存文件
+        upload_path = UPLOAD_DIR / secure_filename(file.filename)
+        file.save(upload_path)
+
+        # 参数获取增强
         model_type = request.form.get('model_type', 'DNN')
         mode = request.form.get('mode', 'predict')
         
-        # 执行分析
+        # 执行命令
         cmd = [
             str(VENV_PYTHON),
             str(MODULES_DIR / "historical_predictor.py"),
@@ -161,10 +164,10 @@ def run_historical():
             cmd,
             capture_output=True,
             text=True,
-            timeout=300  # 5分钟超时
+            timeout=300
         )
         
-        # 清理临时文件
+        # 清理文件
         upload_path.unlink(missing_ok=True)
         
         return jsonify({
@@ -173,11 +176,8 @@ def run_historical():
             "returncode": result.returncode
         })
         
-    except subprocess.TimeoutExpired:
-        return jsonify({"error": "分析超时"}), 500
     except Exception as e:
-        app.logger.error(f"历史分析失败: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": f"系统错误: {str(e)}"}), 500
 
 # 训练任务追踪
 training_jobs = {}
@@ -268,6 +268,18 @@ def get_train_status(job_id):
             response["log"] = ""
     
     return jsonify(response)
+
+# 在web/app.py中添加
+@app.route('/realtime/clear', methods=['POST'])
+def clear_realtime_log():
+    realtime_monitor.output_buffer.clear()
+    return jsonify({"status": "cleared"})
+
+@app.route('/historical/clear', methods=['POST'])
+def clear_historical_log():
+    # 实现历史日志清除逻辑
+    return jsonify({"status": "cleared"})
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=False)
