@@ -89,14 +89,14 @@ def read_output():
             break
     realtime_monitor.running = False
 
+# 修改web/app.py中的/realtime/output路由
 @app.route('/realtime/output')
 def get_realtime_output():
-    """获取实时输出"""
-    with realtime_monitor.lock:
-        return jsonify({
-            "output": "\n".join(realtime_monitor.output_buffer),
-            "active": realtime_monitor.running
-        })
+    return jsonify({
+        "output": "\n".join(realtime_monitor.output_buffer),
+        "active": realtime_monitor.running,
+        "pid": realtime_monitor.process.pid if realtime_monitor.process else None
+    })
 
 @app.route('/realtime', methods=['DELETE'])
 def stop_realtime():

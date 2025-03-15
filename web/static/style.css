@@ -57,3 +57,66 @@ pre {
     border-radius: 4px;
     white-space: pre-wrap;
 }
+
+.console-container {
+    height: 400px; /* 固定容器高度 */
+    border: 1px solid #3c3c3c;
+    border-radius: 4px;
+    background: #1e1e1e;
+    margin-top: 15px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden; /* 隐藏外部溢出 */
+}
+
+.console-content {
+    flex: 1;
+    overflow-y: auto; /* 启用垂直滚动 */
+    padding: 10px;
+    margin: 0;
+    color: #d4d4d4;
+    font-family: 'Consolas', monospace;
+    white-space: pre-wrap;
+    line-height: 1.5;
+}
+
+.console-status {
+    padding: 8px 15px;
+    background: #252526;
+    border-top: 1px solid #3c3c3c;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.status-indicator {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #ff0000;
+    box-shadow: 0 0 5px currentColor;
+}
+
+.status-text {
+    font-size: 0.9em;
+    font-weight: bold;
+}
+
+/* 自定义滚动条样式 */
+.console-content::-webkit-scrollbar {
+    width: 8px;
+}
+
+.console-content::-webkit-scrollbar-track {
+    background: #2d2d2d;
+    border-radius: 4px;
+}
+
+.console-content::-webkit-scrollbar-thumb {
+    background: #535353;
+    border-radius: 4px;
+}
+
+.console-content::-webkit-scrollbar-thumb:hover {
+    background: #6b6b6b;
+}

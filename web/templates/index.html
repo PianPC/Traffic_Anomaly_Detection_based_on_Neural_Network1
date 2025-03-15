@@ -19,15 +19,20 @@
         <!-- 实时监测面板 -->
         <div id="realtime" class="tab-content active">
             <h2>实时流量监测</h2>
-            <select id="realtime-model">
-                <option value="DNN">DNN模型</option>
-                <option value="LSTM">LSTM模型</option>
-            </select>
-            <button onclick="startRealtime()">启动监测</button>
-            <button onclick="stopRealtime()">停止监测</button>
-            <div class="console">
-                <pre id="realtime-content"></pre>
-                <div id="realtime-status" style="color: #ff0000;">监测已停止</div>
+            <div class="control-group">
+                <select id="realtime-model">
+                    <option value="DNN">DNN模型</option>
+                    <option value="LSTM">LSTM模型</option>
+                </select>
+                <button onclick="startRealtime()">启动监测</button>
+                <button onclick="stopRealtime()">停止监测</button>
+            </div>
+            <div class="console-container">
+                <pre id="realtime-content" class="console-content"></pre>
+                <div id="realtime-status" class="console-status">
+                    <span class="status-indicator"></span>
+                    <span class="status-text">监测已停止</span>
+                </div>
             </div>
         </div>
 
@@ -72,7 +77,49 @@
 
         // 实时监测控制
         let outputInterval;
+        // 修改web/templates/index.html中的JavaScript逻辑
+        let isUserScrolling = false;
 
+        function updateRealtimeOutput() {
+            const content = document.getElementById('realtime-content');
+            const container = document.querySelector('.console-container');
+            
+            // 判断用户是否正在手动滚动
+            const prevScrollPos = content.scrollTop;
+            const isAtBottom = content.scrollHeight - content.scrollTop === content.clientHeight;
+
+            axios.get('/realtime/output').then(response => {
+                content.textContent = response.data.output;
+                
+                // 自动滚动控制
+                if (!isUserScrolling || isAtBottom) {
+                    content.scrollTop = content.scrollHeight;
+                }
+
+                // 更新状态显示
+                const statusIndicator = document.querySelector('.status-indicator');
+                const statusText = document.querySelector('.status-text');
+                if (response.data.active) {
+                    statusIndicator.style.backgroundColor = '#00ff00';
+                    statusText.textContent = `实时监测中 (PID: ${response.data.pid})`;
+                    statusText.style.color = '#00ff00';
+                } else {
+                    statusIndicator.style.backgroundColor = '#ff0000';
+                    statusText.textContent = '监测已停止';
+                    statusText.style.color = '#ff0000';
+                }
+            });
+
+            // 重置滚动状态标记
+            isUserScrolling = (content.scrollTop !== prevScrollPos);
+        }
+
+        // 添加滚动事件监听
+        document.querySelector('.console-content').addEventListener('scroll', () => {
+            isUserScrolling = true;
+            setTimeout(() => isUserScrolling = false, 1000); // 1秒无操作后重置
+        });
+        
         function updateRealtimeOutput() {
             axios.get('/realtime/output')
                 .then(response => {
